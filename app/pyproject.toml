@@ -1,0 +1,27 @@
+[tool.poetry]
+name = "quotexapi"
+version = "1.1.0"
+description = "Quotex API"
+authors = ["cleiton <cleiton.leonel@gmail.com>"]
+license = "MIT"
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+requests = "^2.32.3"
+websocket-client = "^1.8.0"
+playwright = "1.44.0"
+playwright-stealth = "^1.0.6"
+beautifulsoup4 = "^4.12.3"
+pyfiglet = "^1.0.2"
+numpy = "^2.0.0"
+emoji = "^2.12.1"
+rich = "^13.7.1"
+colorama = "^0.4.6"
+fastapi = "^0.115.5"
+uvicorn = "^0.32.1"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

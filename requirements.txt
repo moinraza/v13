@@ -1,0 +1,12 @@
+fastapi==0.115.6
+uvicorn==0.34.0
+pyfiglet==1.0.2
+playwright==1.49.1 
+playwright-stealth==1.0.6
+celery==5.4.0
+redis==5.2.1
+requests==2.32.3
+beautifulsoup4==4.12.3
+bs4==0.0.2
+websockets==14.1
+websocket-client==1.8.0
