@@ -1,0 +1,5 @@
+*.pyc
+*.env
+.idea
+*.log
+runserver_local.sh
