@@ -149,8 +149,7 @@ async def get_assets_open():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/candles_new", response_model=List[Dict])
-async def get_candles_progressive(
-    request: Request, 
+async def get_candles_progressive(request: Request, 
     days: int = 1, 
     asset: str = "BRLUSD_otc", 
     offset: int = 3600, 
@@ -299,16 +298,9 @@ async def get_candles_progressive(
     
 
 @app.get("/candles_new_v2", response_model=List[Dict])
-async def get_candles_progressive(request: Request, 
-    max_candles: int = 1, 
-    asset: str = "BRLUSD_otc", 
-    offset: int = 3600, 
-    period: int = 60,
-    timeout: float = 0.1  # Timeout in seconds
-):
+async def get_candles_progressive(max_candles: int = 1, asset: str = "BRLUSD_otc", offset: int = 3600,period: int = 60,timeout: float = 0.1):
     try:
         start_time = time.time()
-
         # Implement retry logic with ensure_connection
         retry_attempts = 0
         while retry_attempts < 3:
@@ -318,104 +310,74 @@ async def get_candles_progressive(request: Request,
             await asyncio.sleep(1)
         else:
             raise HTTPException(status_code=500, detail="Failed to establish stable connection after multiple attempts")
-
         logger.info("Connection is Successful.")
-
         # Get symbol_id from codes_asset dictionary
         symbol_id = constants.codes_asset.get(asset)
         if not symbol_id:
             raise HTTPException(status_code=400, detail=f"Invalid asset: {asset}")
-
         logger.info(f"Max candles to fetch: {max_candles}")
 
         end_from_time = int(time.time())
         logger.info("Starting candles...")
-
         # Initial candle fetch
         candles = await client.get_candles(asset, end_from_time, offset, period)
-        list_candles = candles[::-1] if candles else []
+        list_candles = candles[::-1] if candles else []  # Reverse candles if available
         seen_times = set()
-
-        # Initialize last_update_time with current time
-        last_update_time = time.time()
-
+        last_update_time = time.time()  # Initialize last update time
         if list_candles:
             end_from_time = list_candles[-1]["time"]
-
             while len(list_candles) < max_candles:
                 current_time = time.time()
                 time_since_last_update = current_time - last_update_time
-                logger.debug(f"Current time: {current_time}, Last update time: {last_update_time}, Time since last update: {time_since_last_update:.3f} seconds")
-
+                logger.debug(f"Current time: {current_time}, Last update time: {last_update_time}, "f"Time since last update: {time_since_last_update:.3f} seconds")
                 if time_since_last_update > timeout:  # Timeout check
-                    logger.info("No new candles received within the timeout period. Stopping fetch.")
-                    break
+                    logger.info("No new candles received within the timeout period. Stopping fetch.")                    
 
+                # Ensure connection before fetching candles
                 if not await ensure_connection():
                     raise HTTPException(status_code=500, detail="Lost connection while fetching candles")
 
-                # Fetch progressive candles
+                # Fetch new candles
                 candles = await client.get_candles(asset, end_from_time, offset, period, progressive=True)
-
-                # Log received candles for debugging
                 logger.debug(f"Received candles: {candles}")
 
                 if candles:
-                    end_from_time = candles[0]["time"]
-                    if end_from_time not in seen_times:
-                        if not candles[0].get("open"):
-                            candles = process_candles(candles, period)
+                    end_from_time = candles[0]["time"]  # Update end_from_time for the next fetch
 
-                        candles = candles[::-1]
-                        new_candle_added = False
+                    # Avoid reversing candles multiple times
+                    candles = candles[::-1]
 
-                        for candle in candles:
-                            # Validate candle data structure
-                            if not all(k in candle for k in ("time", "open", "close", "high", "low", "ticks")):
-                                logger.warning(f"Invalid candle data received: {candle}")
-                                continue
+                    # Process new candles
+                    for candle in candles:
+                        timestamp = candle.get("time")
 
-                            timestamp = candle['time']
+                        # Skip duplicate candles based on timestamp
+                        if timestamp in seen_times:
+                            continue
 
-                            # Add missing symbol_id
-                            if 'symbol_id' not in candle:
-                                candle['symbol_id'] = symbol_id
+                        # Validate and enrich candle data
+                        if all(k in candle for k in ("time", "open", "close", "high", "low", "ticks")):
+                            candle["symbol_id"] = candle.get("symbol_id", symbol_id)
+                            candle["asset"] = candle.get("asset", asset)
+                            candle["last_tick"] = candle.get("last_tick", timestamp + random.uniform(0, 59.999))
+                            list_candles.append(candle)  # Add to the main list
+                            seen_times.add(timestamp)  # Mark as seen
+                            last_update_time = time.time()  # Reset timeout
+                            logger.debug(f"Added new candle: {candle}")
 
-                            # Add missing asset
-                            if 'asset' not in candle:
-                                candle['asset'] = asset
+                        # Break if we have enough candles
+                        if len(list_candles) >= max_candles:
+                            break
 
-                            # Add missing last_tick
-                            if 'last_tick' not in candle:
-                                random_seconds = random.uniform(0, 59.999)
-                                candle['last_tick'] = timestamp + random_seconds
+                logger.info(f"Start: {candles[-1]['time']}, End: {candles[0]['time']}, "f"Epoch Candle Time: {timestamp_to_datetime(end_from_time)}")
 
-                            if candle not in list_candles:
-                                list_candles.append(candle)
-                                new_candle_added = True
-                                logger.debug(f"Added new candle: {candle}")
+            # Small delay to prevent high CPU usage
+            await asyncio.sleep(0.05)
 
-                            if len(list_candles) >= max_candles:
-                                break
-
-                        if new_candle_added:
-                            last_update_time = time.time()  # Reset timeout since new data was added
-                            logger.debug(f"New candle added. Updated last_update_time to {last_update_time}")
-
-                        seen_times.add(end_from_time)
-
-                        logger.info(f'Start: {candles[-1]["time"]} End: {candles[0]["time"]}')
-                        epoch_candle = timestamp_to_datetime(end_from_time)
-                        logger.info(f'Epoch Candle Time: {epoch_candle}')
-
-                await asyncio.sleep(0.05)  # Small delay to prevent high CPU usage
-
-        list_candles = list_candles[::-1]
-
-        # Final pass to ensure all candles have the standard format
-        standardized_candles = []
-        for candle in list_candles:
-            standardized_candle = {
+        # Final processing or validation if needed
+        list_candles = list_candles[::-1]  # Reverse for chronological order if required
+        standardized_candles = [
+            {
                 'symbol_id': candle.get('symbol_id', symbol_id),
                 'time': candle['time'],
                 'open': candle['open'],
@@ -427,22 +389,14 @@ async def get_candles_progressive(request: Request,
                 'asset': candle.get('asset', asset),
                 'time_read': datetime.fromtimestamp(candle['time'], tz=timezone.utc).astimezone(timezone(timedelta(hours=6))).strftime('%Y-%m-%d %H:%M') + " (UTC: +06:00)"
             }
-            standardized_candles.append(standardized_candle)
-
-        total_candles = len(standardized_candles)
+            for candle in list_candles
+        ]
+        # Logging results
         total_time_spent = time.time() - start_time
-
-        logger.info(f"\nCandles Total: {total_candles}")
+        logger.info(f"Total candles fetched: {len(standardized_candles)}")
         logger.info(f"Total time spent: {total_time_spent:.2f} seconds")
-
         if standardized_candles:
-            first_candle = standardized_candles[-1]["time"]
-            last_candle = standardized_candles[0]["time"]
-            logger.info(
-                f"Start Candle: {timestamp_to_datetime(first_candle)} \n"
-                f"End Candle: {timestamp_to_datetime(last_candle)} "
-            )
-
+            logger.info(f"Start Candle: {timestamp_to_datetime(standardized_candles[-1]['time'])}\n"f"End Candle: {timestamp_to_datetime(standardized_candles[0]['time'])}")
         return standardized_candles
 
     except WebSocketConnectionClosedException:
