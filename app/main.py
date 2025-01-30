@@ -12,6 +12,7 @@ from websocket._exceptions import WebSocketConnectionClosedException
 from app.quotexapi.expiration import timestamp_to_datetime
 import random
 from app import constants
+from async_timeout import timeout
 
 app = FastAPI()
 
@@ -184,18 +185,14 @@ async def get_candles_progressive(days: int = 1, asset: str = "BRLUSD_otc", offs
                 logger.debug(f"Current time: {current_time}, Last update time: {last_update_time}, "f"Time since last update: {time_since_last_update:.3f} seconds")
                 if time_since_last_update > timeout:  # Timeout check
                     logger.info("No new candles received within the timeout period. Stopping fetch.")                    
-
                 # Ensure connection before fetching candles
                 if not await ensure_connection():
                     raise HTTPException(status_code=500, detail="Lost connection while fetching candles")
-
                 # Fetch new candles
                 candles = await client.get_candles(asset, end_from_time, offset, period, progressive=True)
                 logger.debug(f"Received candles: {candles}")
-
                 if candles:
                     end_from_time = candles[0]["time"]  # Update end_from_time for the next fetch
-
                     # Avoid reversing candles multiple times
                     candles = candles[::-1]
 
@@ -222,8 +219,7 @@ async def get_candles_progressive(days: int = 1, asset: str = "BRLUSD_otc", offs
                             break
 
                 logger.info(f"Start: {candles[-1]['time']}, End: {candles[0]['time']}, "f"Epoch Candle Time: {timestamp_to_datetime(end_from_time)}")
-
-            # Small delay to prevent high CPU usage
+                # Small delay to prevent high CPU usage
             await asyncio.sleep(0.05)
 
         # Final processing or validation if needed
@@ -261,112 +257,79 @@ async def get_candles_progressive(days: int = 1, asset: str = "BRLUSD_otc", offs
     
 
 @app.get("/candles_new_v2", response_model=List[Dict])
-async def get_candles_progressive(max_candles: int = 1, asset: str = "BRLUSD_otc", offset: int = 3600,period: int = 60,timeout: float = 0.1):
+async def get_candles_progressive(
+    max_candles: int = 1, 
+    asset: str = "BRLUSD_otc", 
+    offset: int = 3600, 
+    period: int = 60, 
+    timeout_duration: float = 5  # Increased timeout for reliability
+):
     try:
         start_time = time.time()
-        # Implement retry logic with ensure_connection
-        retry_attempts = 0
-        while retry_attempts < 3:
+        # Ensure connection with retry logic
+        for _ in range(3):
             if await ensure_connection():
                 break
-            retry_attempts += 1
             await asyncio.sleep(1)
         else:
-            raise HTTPException(status_code=500, detail="Failed to establish stable connection after multiple attempts")
-        logger.info("Connection is Successful.")
-        # Get symbol_id from codes_asset dictionary
+            raise HTTPException(status_code=500, detail="Failed to establish a stable connection.")
+        logger.info("Connection established successfully.")
+        # Get symbol_id
         symbol_id = constants.codes_asset.get(asset)
         if not symbol_id:
             raise HTTPException(status_code=400, detail=f"Invalid asset: {asset}")
-        logger.info(f"Max candles to fetch: {max_candles}")
-
+        logger.info(f"Fetching up to {max_candles} candles.")
         end_from_time = int(time.time())
-        logger.info("Starting candles...")
-        # Initial candle fetch
-        candles = await client.get_candles(asset, end_from_time, offset, period)
-        list_candles = candles[::-1] if candles else []  # Reverse candles if available
         seen_times = set()
-        last_update_time = time.time()  # Initialize last update time
-        if list_candles:
-            end_from_time = list_candles[-1]["time"]
-            while len(list_candles) < max_candles:
-                current_time = time.time()
-                time_since_last_update = current_time - last_update_time
-                logger.debug(f"Current time: {current_time}, Last update time: {last_update_time}, "f"Time since last update: {time_since_last_update:.3f} seconds")
-                if time_since_last_update > timeout:  # Timeout check
-                    logger.info("No new candles received within the timeout period. Stopping fetch.")                    
-
-                # Ensure connection before fetching candles
-                if not await ensure_connection():
-                    raise HTTPException(status_code=500, detail="Lost connection while fetching candles")
-
-                # Fetch new candles
-                candles = await client.get_candles(asset, end_from_time, offset, period, progressive=True)
-                logger.debug(f"Received candles: {candles}")
-
-                if candles:
-                    end_from_time = candles[0]["time"]  # Update end_from_time for the next fetch
-
-                    # Avoid reversing candles multiple times
-                    candles = candles[::-1]
-
-                    # Process new candles
-                    for candle in candles:
-                        timestamp = candle.get("time")
-
-                        # Skip duplicate candles based on timestamp
-                        if timestamp in seen_times:
-                            continue
-
-                        # Validate and enrich candle data
-                        if all(k in candle for k in ("time", "open", "close", "high", "low", "ticks")):
-                            candle["symbol_id"] = candle.get("symbol_id", symbol_id)
-                            candle["asset"] = candle.get("asset", asset)
-                            candle["last_tick"] = candle.get("last_tick", timestamp + random.uniform(0, 59.999))
-                            list_candles.append(candle)  # Add to the main list
-                            seen_times.add(timestamp)  # Mark as seen
-                            last_update_time = time.time()  # Reset timeout
-                            logger.debug(f"Added new candle: {candle}")
-
-                        # Break if we have enough candles
-                        if len(list_candles) >= max_candles:
-                            break
-
-                logger.info(f"Start: {candles[-1]['time']}, End: {candles[0]['time']}, "f"Epoch Candle Time: {timestamp_to_datetime(end_from_time)}")
-
-            # Small delay to prevent high CPU usage
-            await asyncio.sleep(0.05)
-
-        # Final processing or validation if needed
-        list_candles = list_candles[::-1]  # Reverse for chronological order if required
+        standardized_candles = []
+        # Fetch candles with timeout
+        try:
+            async with timeout(timeout_duration):  
+                candles = await client.get_candles(asset, end_from_time, offset, period)
+        except asyncio.TimeoutError:
+            logger.error("Timeout while fetching candles.")
+            raise HTTPException(status_code=504, detail="Request timed out while fetching candles.")
+        if not candles:
+            return []
+        list_candles = candles[::-1]  # Reverse for chronological order
+        end_from_time = list_candles[-1]["time"]  # Update last timestamp
+        # Process and enrich candles efficiently
         standardized_candles = [
             {
-                'symbol_id': candle.get('symbol_id', symbol_id),
-                'time': candle['time'],
-                'open': candle['open'],
-                'close': candle['close'],
-                'high': candle['high'],
-                'low': candle['low'],
-                'ticks': candle['ticks'],
-                'last_tick': candle.get('last_tick', candle['time'] + random.uniform(0, 59.999)),
-                'asset': candle.get('asset', asset),
-                'time_read': datetime.fromtimestamp(candle['time'], tz=timezone.utc).astimezone(timezone(timedelta(hours=6))).strftime('%Y-%m-%d %H:%M') + " (UTC: +06:00)"
+                "symbol_id": candle.get("symbol_id", symbol_id),
+                "time": candle["time"],
+                "open": candle["open"],
+                "close": candle["close"],
+                "high": candle["high"],
+                "low": candle["low"],
+                "ticks": candle["ticks"],
+                "last_tick": candle.get("last_tick", candle["time"] + random.uniform(0, 59.999)),
+                "asset": candle.get("asset", asset),
+                "time_read": datetime.fromtimestamp(candle["time"], tz=timezone.utc)
+                            .astimezone(timezone(timedelta(hours=6)))
+                            .strftime('%Y-%m-%d %H:%M') + " (UTC: +06:00)"
             }
             for candle in list_candles
+            if candle["time"] not in seen_times and all(
+                k in candle for k in ("time", "open", "close", "high", "low", "ticks")
+            )
         ]
+        seen_times.update(candle["time"] for candle in standardized_candles)
         # Logging results
         total_time_spent = time.time() - start_time
-        logger.info(f"Total candles fetched: {len(standardized_candles)}")
-        logger.info(f"Total time spent: {total_time_spent:.2f} seconds")
+        logger.info(f"Total candles fetched: {len(standardized_candles)} in {total_time_spent:.2f} seconds.")
         if standardized_candles:
-            logger.info(f"Start Candle: {timestamp_to_datetime(standardized_candles[-1]['time'])}\n"f"End Candle: {timestamp_to_datetime(standardized_candles[0]['time'])}")
+            logger.info(f"Start Candle: {timestamp_to_datetime(standardized_candles[-1]['time'])}, "f"End Candle: {timestamp_to_datetime(standardized_candles[0]['time'])}")
         return standardized_candles
 
     except WebSocketConnectionClosedException:
-        connection_state["is_connected"] = False
-        logger.error("WebSocket connection closed unexpectedly")
-        raise HTTPException(status_code=500, detail="WebSocket connection closed unexpectedly")
+        logger.error("WebSocket connection closed unexpectedly.")
+        raise HTTPException(status_code=500, detail="WebSocket connection closed unexpectedly.")
+    
+    except asyncio.TimeoutError:
+        logger.error("Overall timeout exceeded.")
+        raise HTTPException(status_code=504, detail="Request timed out.")
+
     except Exception as e:
         logger.error(f"Error processing request: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-    

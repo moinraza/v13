@@ -10,3 +10,4 @@ beautifulsoup4==4.12.3
 bs4==0.0.2
 websockets==14.1
 websocket-client==1.8.0
+async-timeout==5.0.1
