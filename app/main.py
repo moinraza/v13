@@ -14,6 +14,7 @@ import random
 from app import constants
 from async_timeout import timeout
 from app.tasks import candle_connect
+from fastapi import BackgroundTasks
 
 app = FastAPI()
 
@@ -150,20 +151,24 @@ async def get_assets_open():
         logger.error(f"Error in assets_open: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+async def fetch_candles(asset, end_time, offset, period, retries=3):
+    for _ in range(retries):
+        try:
+            return await client.get_candles(asset, end_time, offset, period, progressive=True)
+        except asyncio.TimeoutError:
+            logger.warning(f"Timeout. Retrying {_ + 1}/{retries}...")
+            await asyncio.sleep(2)  # Wait before retrying
+    raise HTTPException(status_code=504, detail="Failed to fetch candles after multiple retries")
+
 @app.get("/candles_new_mins", response_model=List[Dict])
-async def get_candles_progressive(asset: str = "BRLUSD_otc", offset: int = 3600, period: int = 60, timeout_duration: float = 18):
+async def get_candles_progressive(asset: str = "BRLUSD_otc", offset: int = 3600, period: int = 60):
     try:
         start_time = time.time()
         end_from_time = int(time.time())
         symbol_id = constants.codes_asset.get(asset)
         logger.info("Starting candles...")
         seen_times = set()
-        try:
-            async with timeout(timeout_duration):  
-                candles = await client.get_candles(asset, end_from_time, offset, period)
-        except asyncio.TimeoutError:
-            logger.error("Timeout while fetching candles.")
-            raise HTTPException(status_code=504, detail="Request timed out while fetching candles.")
+        candles = await fetch_candles(asset, end_from_time, offset, period)
         if not candles:
             return []
         list_candles = candles[::-1]  # Reverse for chronological order
@@ -200,7 +205,7 @@ async def get_candles_progressive(asset: str = "BRLUSD_otc", offset: int = 3600,
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/candles_new", status_code=200)
-async def get_candles_progressive(days: int = 1, asset: str = "BRLUSD_otc", period: int = 60):
+async def get_candles_progressive(days: int = 1, offset: int = 3600, asset: str = "BRLUSD_otc", period: int = 60):
     try:
         # Retry connection logic
         for _ in range(3):
@@ -215,7 +220,10 @@ async def get_candles_progressive(days: int = 1, asset: str = "BRLUSD_otc", peri
             raise HTTPException(status_code=400, detail=f"Invalid asset: {asset}")
         max_candles = ((days * 24) * 60 * 60 // period)
         logger.info(f"Max candles to fetch: {max_candles}")
-        data = {'max_candles':max_candles, 'asset':asset}
+        end_from_time = int(time.time())
+        candles = await client.get_candles(asset, end_from_time, offset, period)
+        list_candles = candles[::-1]
+        data = {'max_candles':max_candles, 'asset':asset, 'list_candles':len(list_candles)}
         candle_connect.delay(data)
         return {"message": "Uploading your data! Wait few minutes"}
     except WebSocketConnectionClosedException:

@@ -18,10 +18,11 @@ import requests, json, itertools, os
 def candle_connect(data):
     max_candles = data.get('max_candles')
     asset = data.get('asset')
+    list_candles = data.get('list_candles')
     all_responses = [] 
-    for _ in range(0, max_candles):
+    while list_candles < max_candles:
         headers = {'Content-Type': 'application/json',}
-        response = requests.get(f'http://31.57.228.200/candles_new_mins?asset={asset}', headers=headers)
+        response = requests.get(f'http://web:8000/candles_new_mins?asset={asset}', headers=headers)
         if response.status_code == 200:
             res = response.json()
             all_responses.append(res)  # Append response to list
