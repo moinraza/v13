@@ -151,7 +151,7 @@ async def get_assets_open():
         logger.error(f"Error in assets_open: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-async def fetch_candles(asset, end_time, offset, period, retries=3):
+async def fetch_candles(asset, end_time, offset, period, retries=5):
     for _ in range(retries):
         try:
             return await client.get_candles(asset, end_time, offset, period, progressive=True)
@@ -161,7 +161,7 @@ async def fetch_candles(asset, end_time, offset, period, retries=3):
     raise HTTPException(status_code=504, detail="Failed to fetch candles after multiple retries")
 
 @app.get("/candles_new_mins", response_model=List[Dict])
-async def get_candles_progressive(asset: str = "BRLUSD_otc", offset: int = 3600, period: int = 60):
+async def get_candles_progressive_one(asset: str = "BRLUSD_otc", offset: int = 3600, period: int = 60):
     try:
         start_time = time.time()
         end_from_time = int(time.time())
@@ -205,7 +205,7 @@ async def get_candles_progressive(asset: str = "BRLUSD_otc", offset: int = 3600,
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/candles_new", status_code=200)
-async def get_candles_progressive(days: int = 1, offset: int = 3600, asset: str = "BRLUSD_otc", period: int = 60):
+async def get_candles_progressive_bulk(days: int = 1, offset: int = 3600, asset: str = "BRLUSD_otc", period: int = 60):
     try:
         # Retry connection logic
         for _ in range(3):
@@ -236,12 +236,11 @@ async def get_candles_progressive(days: int = 1, offset: int = 3600, asset: str 
 
 
 @app.get("/candles_new_v2", response_model=List[Dict])
-async def get_candles_progressive(
+async def get_candles_progressive_single(
     max_candles: int = 1, 
     asset: str = "BRLUSD_otc", 
     offset: int = 3600, 
     period: int = 60, 
-    timeout_duration: float = 15  # Increased timeout for reliability
 ):
     try:
         start_time = time.time()
@@ -262,12 +261,14 @@ async def get_candles_progressive(
         seen_times = set()
         standardized_candles = []
         # Fetch candles with timeout
-        try:
-            async with timeout(timeout_duration):  
-                candles = await client.get_candles(asset, end_from_time, offset, period)
-        except asyncio.TimeoutError:
-            logger.error("Timeout while fetching candles.")
-            raise HTTPException(status_code=504, detail="Request timed out while fetching candles.")
+        for _ in range(5):
+            try:
+                candles =  await client.get_candles(asset, end_from_time, offset, period)
+                return candles
+            except asyncio.TimeoutError:
+                logger.warning(f"Timeout. Retrying {_ + 1}/{5}...")
+                await asyncio.sleep(2)  # Wait before retrying
+            raise HTTPException(status_code=504, detail="Failed to fetch candles after multiple retries")
         if not candles:
             return []
         list_candles = candles[::-1]  # Reverse for chronological order
