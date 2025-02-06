@@ -235,6 +235,15 @@ async def get_candles_progressive_bulk(days: int = 1, offset: int = 3600, asset:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+async def fetch_candles2(asset, end_time, offset, period, retries=5):
+    for _ in range(retries):
+        try:
+            return await client.get_candles(asset, end_time, offset, period)
+        except asyncio.TimeoutError:
+            logger.warning(f"Timeout. Retrying {_ + 1}/{retries}...")
+            await asyncio.sleep(2)  # Wait before retrying
+    raise HTTPException(status_code=504, detail="Failed to fetch candles after multiple retries")
+
 @app.get("/candles_new_v2", response_model=List[Dict])
 async def get_candles_progressive_single(
     max_candles: int = 1, 
@@ -261,14 +270,7 @@ async def get_candles_progressive_single(
         seen_times = set()
         standardized_candles = []
         # Fetch candles with timeout
-        for _ in range(5):
-            try:
-                candles =  await client.get_candles(asset, end_from_time, offset, period)
-                return candles
-            except asyncio.TimeoutError:
-                logger.warning(f"Timeout. Retrying {_ + 1}/{5}...")
-                await asyncio.sleep(2)  # Wait before retrying
-            raise HTTPException(status_code=504, detail="Failed to fetch candles after multiple retries")
+        candles = await fetch_candles2(asset, end_from_time, offset, period)
         if not candles:
             return []
         list_candles = candles[::-1]  # Reverse for chronological order
